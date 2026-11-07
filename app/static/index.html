@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Code Review Assistant</title>
+<style>
+:root{
+  --bg:#f3f4f1; --panel:#ffffff; --ink:#16202a; --muted:#5b6773; --line:#d9ddd6;
+  --accent:#0b6b5d; --accent-ink:#ffffff;
+  --high:#b42318; --medium:#b54708; --low:#3b5b92; --info:#5b6773; --ok:#0b6b5d;
+  --code-bg:#eef0ec;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#12171c; --panel:#1b222a; --ink:#e7ebee; --muted:#93a0ab; --line:#2c3640;
+    --accent:#4fc3ae; --accent-ink:#0b1a17; --high:#ff8a80; --medium:#ffb36b; --low:#8fb4f0; --info:#93a0ab; --ok:#4fc3ae;
+    --code-bg:#11161b; }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 "Iowan Old Style","Palatino Linotype",Georgia,serif}
+header{padding:20px 24px 8px;max-width:1180px;margin:0 auto}
+h1{margin:0;font-size:26px;font-weight:600;letter-spacing:-.01em}
+header p{margin:4px 0 0;color:var(--muted);max-width:60ch}
+main{max-width:1180px;margin:0 auto;padding:16px 24px 48px;display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:24px}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px}
+label{display:block;font:600 13px system-ui,sans-serif;margin-bottom:6px}
+textarea,input,select{width:100%;border:1px solid var(--line);border-radius:4px;background:var(--code-bg);color:var(--ink);
+  font:13px/1.5 ui-monospace,Menlo,Consolas,monospace;padding:10px}
+textarea{min-height:230px;resize:vertical}
+.row{display:flex;gap:12px;margin:12px 0;align-items:end}
+.row>div{flex:1}
+button{font:600 14px system-ui,sans-serif;background:var(--accent);color:var(--accent-ink);border:0;border-radius:4px;padding:10px 18px;cursor:pointer}
+button:disabled{opacity:.6;cursor:wait}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+#status{font:13px system-ui,sans-serif;color:var(--muted);margin-left:12px}
+#result{margin-top:20px}
+.issue{border-left:4px solid var(--info);padding:6px 12px;margin:10px 0;background:var(--code-bg);border-radius:0 4px 4px 0}
+.issue.high{border-color:var(--high)} .issue.medium{border-color:var(--medium)} .issue.low{border-color:var(--low)}
+.issue b{font:700 12px system-ui,sans-serif}
+.issue .fix{color:var(--muted);font-size:14px}
+pre{background:var(--code-bg);padding:12px;border-radius:4px;overflow:auto;font:12.5px/1.5 ui-monospace,Menlo,Consolas,monospace;margin:8px 0}
+.verdict{font:600 13px system-ui,sans-serif;padding:8px 12px;border-radius:4px;display:inline-block}
+.verdict.ok{color:var(--ok);border:1px solid var(--ok)} .verdict.bad{color:var(--high);border:1px solid var(--high)}
+h2{font-size:17px;margin:20px 0 4px}
+aside h2{margin-top:0}
+.stat{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding:6px 0;font:14px system-ui,sans-serif}
+.stat span:last-child{font-variant-numeric:tabular-nums;font-weight:600}
+.bars{display:flex;align-items:flex-end;gap:2px;height:56px;margin:10px 0 2px}
+.bars i{flex:1;background:var(--accent);min-height:2px;border-radius:2px 2px 0 0}
+small{color:var(--muted);font:12px system-ui,sans-serif}
+.err{color:var(--high);font:600 14px system-ui,sans-serif}
+</style>
+</head>
+<body>
+<header>
+  <h1>AI Code Review Assistant</h1>
+  <p>Paste code or a unified diff. You get review comments, plus suggested tests that are checked before you see them.</p>
+</header>
+<main>
+  <section class="panel">
+    <label for="code">Code or diff</label>
+    <textarea id="code" spellcheck="false">def load(expr):
+    password = "hunter2"
+    try:
+        return eval(expr)
+    except:
+        print("failed")
+</textarea>
+    <div class="row">
+      <div><label for="lang">Language</label>
+        <select id="lang"><option>python</option><option>javascript</option><option>java</option><option>cpp</option></select></div>
+      <div><label for="file">File name (optional)</label><input id="file" placeholder="app.py"></div>
+    </div>
+    <button id="go">Review code</button><span id="status" role="status"></span>
+    <div id="result" aria-live="polite"></div>
+  </section>
+  <aside class="panel">
+    <h2>Service health</h2>
+    <div id="metrics"><small>Loading…</small></div>
+  </aside>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+
+async function review() {
+  const btn = $("go"); btn.disabled = true; $("status").textContent = "Reviewing…";
+  const out = $("result"); out.replaceChildren();
+  try {
+    const res = await fetch("/review", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({code: $("code").value, language: $("lang").value, filename: $("file").value || null})});
+    const data = await res.json();
+    if (!res.ok) {
+      const d = Array.isArray(data.detail) ? data.detail.map(x => x.msg).join("; ") : data.detail;
+      out.append(el("p", "err", "Review failed: " + d)); return;
+    }
+    render(out, data);
+    $("status").textContent = `Done in ${data.latency_ms} ms`;
+  } catch (e) {
+    out.append(el("p", "err", "Could not reach the service. Is the server running?"));
+  } finally { btn.disabled = false; loadMetrics(); }
+}
+
+function render(out, d) {
+  out.append(el("h2", null, "Summary"), el("p", null, d.summary));
+  out.append(el("h2", null, `Issues (${d.issues.length})`));
+  if (!d.issues.length) out.append(el("p", null, "No issues found."));
+  for (const i of d.issues) {
+    const box = el("div", "issue " + i.severity);
+    box.append(el("b", null, i.severity + (i.line ? ` · line ${i.line}` : "")), el("div", null, i.message));
+    if (i.suggestion) box.append(el("div", "fix", "Fix: " + i.suggestion));
+    out.append(box);
+  }
+  if (d.suggested_tests) {
+    out.append(el("h2", null, "Suggested tests"));
+    if (d.test_check) {
+      const ok = d.test_check.valid;
+      out.append(el("span", "verdict " + (ok ? "ok" : "bad"),
+        ok ? `Passed checks: ${d.test_check.test_count} test(s), ${d.test_check.assertion_count} assertion(s)`
+           : "Failed checks: " + d.test_check.problems.join(" ")));
+    }
+    out.append(el("pre", null, d.suggested_tests));
+  }
+}
+
+async function loadMetrics() {
+  try {
+    const m = await (await fetch("/metrics")).json();
+    const box = $("metrics"); box.replaceChildren();
+    const rows = [["Requests", m.requests], ["Error rate", (m.error_rate * 100).toFixed(1) + "%"],
+      ["Latency p50", m.latency_ms.p50 + " ms"], ["Latency p95", m.latency_ms.p95 + " ms"],
+      ["Model failures", m.llm_failures],
+      ["AI tests passing checks", m.ai_tests.valid_rate == null ? "n/a" : Math.round(m.ai_tests.valid_rate * 100) + "%"]];
+    for (const [k, v] of rows) { const r = el("div", "stat"); r.append(el("span", null, k), el("span", null, String(v))); box.append(r); }
+    const lat = m.recent_latencies_ms, top = Math.max(1, ...lat);
+    const bars = el("div", "bars"); bars.setAttribute("aria-label", "Recent request latencies");
+    for (const x of lat) { const b = document.createElement("i"); b.style.height = (x / top * 100) + "%"; b.title = x + " ms"; bars.append(b); }
+    box.append(bars, el("small", null, "Last " + lat.length + " requests"));
+  } catch (e) { $("metrics").textContent = "Metrics unavailable."; }
+}
+
+$("go").addEventListener("click", review);
+loadMetrics(); setInterval(loadMetrics, 5000);
+</script>
+</body>
+</html>
